@@ -1,0 +1,553 @@
+!  Fortran Source File 
+!
+! CSR Format for Krylov, CRAM // Full Matrix Format for SnS, Taylor
+  SUBROUTINE MatExpKrylov_cuda(A_Csr, x0, x1)
+  IMPLICIT NONE
+  TYPE(CSR_DOUBLE),INTENT(IN) :: A_Csr
+  REAL(8), INTENT(IN), DEVICE :: x0(:)
+  REAL(8), INTENT(INOUT), DEVICE :: x1(:)
+  
+  INTEGER :: n, rank
+  REAL(8), DEVICE :: beta
+  REAL :: beta_host
+  REAL, ALLOCATABLE, DEVICE :: e1(:)
+  REAL, ALLOCATABLE, DEVICE :: v(:), h(:), h_small(:)       ! v : normalized vectors, h : Hessenberg matrix
+  REAL, ALLOCATABLE, DEVICE :: yapprox(:)
+  REAL, ALLOCATABLE :: h_debug(:), v_debug(:)
+  INTEGER :: m          ! reduced order
+  INTEGER :: i, ierr
+  REAL :: time
+  
+  TYPE(DIM3) :: blocks,threads
+  REAL(8), ALLOCATABLE, DEVICE :: workspace(:)
+  INTEGER, ALLOCATABLE, DEVICE :: RedLmnt(:)
+  INTEGER, ALLOCATABLE :: RedLmnt_h(:)
+
+  rank = A_Csr%nr;
+  n = rank
+  ALLOCATE(v(n*n), h(n*n))  
+  !CALL CPU_TIME(time); print*, time
+
+  CALL ArnoldiProcess_cuda(m)
+  CALL CPU_TIME(time); print*, time
+  !print*, 'Arnoldi Done', m
+
+  ALLOCATE(h_small(m*m), yapprox(m), e1(m))
+  !ALLOCATE(h_debug(m*m))
+  DO i = 1, m
+    ierr = cudaMemCpy(h_small(1+(i-1)*m:i*m), h(1+(i-1)*n:m+(i-1)*n), m, cudaMemcpyDeviceToDevice)
+  END DO
+  !h_debug = h_small
+  DEALLOCATE(h)
+  DO i = 1, m
+    !print*, h_debug(1+(i-1)*m:i*m)
+  END DO
+  !DEALLOCATE(h_debug)
+  
+  e1 = 0._8; e1(1) = 1._8;
+  
+  CALL MatExpSns_cuda(h_small, e1, yapprox, m)
+  !print*, 'SnS Done'
+  !ALLOCATE(v_debug(m))
+  !v_debug = yapprox
+  !print*, 'yapprox'; print*, v_debug
+  !DEALLOCATE(v_debug)
+  CALL CPU_TIME(time); print*, time
+  
+  threads = dim3(256,1,1); blocks = dim3(ceiling(m/dble(256)),1,1); beta_host = beta;
+  CALL cusMulv<<<blocks,threads>>>(yapprox, beta_host, yapprox, m)
+  threads = dim3(16,16,1); blocks = dim3(ceiling(n/dble(16)),ceiling(m/dble(16)),1)
+  ALLOCATE(workspace(m*n), RedLmnt(n+1), RedLmnt_h(n+1))
+  !print*, 'mv left'
+  CALL cumv<<<blocks,threads>>>(v(1:n*m), yapprox, n, m, workspace)
+  DO i = 0, n
+    RedLmnt_h(i+1) = 1+i*m
+  END DO
+  RedLmnt = RedLmnt_h
+  DEALLOCATE(RedLmnt_h); blocks = dim3(n,1,1)
+  !print*, 'reduction left'
+  CALL cuRedAdd<<<blocks,threads,256*8>>>(workspace,RedLmnt,x1,n)
+  !print*, 'done'
+  DEALLOCATE(v, h_small, yapprox, e1)
+  DEALLOCATE(workspace, RedLmnt)
+  
+  CALL CPU_TIME(time); print*, time
+  
+  !ALLOCATE(v_debug(n)); v_debug = x1; print*, v_debug
+
+  CONTAINS
+
+  SUBROUTINE ArnoldiProcess_cuda(reduced_rank)
+  IMPLICIT NONE
+  INTEGER, INTENT(INOUT) :: reduced_rank
+  REAL, ALLOCATABLE, DEVICE :: p(:)
+  INTEGER :: i, j, icount, ierr
+  REAL :: HmOut, h_val_host, beta_host
+  REAL(8), DEVICE :: h_val
+  REAL(8), POINTER, DEVICE :: val(:)
+  INTEGER, POINTER, DEVICE :: rowptr(:), colIdx(:)
+  INTEGER :: nnz, nr, nc
+  
+  TYPE(DIM3) :: threads, blocksCal, blocksRed, blocksMv ! blocksCal : for DotP, Addvv, sMulv
+  TYPE(DIM3) :: blocks1
+  REAL(8), ALLOCATABLE, DEVICE :: workspace(:), workspaceMV(:)
+  INTEGER, ALLOCATABLE, DEVICE :: RedLmnt(:), RedLmntMV(:)
+  INTEGER, ALLOCATABLE :: RedLmnt_h(:), RedLmntMV_h(:)
+  
+  !REAL, ALLOCATABLE :: v_debug(:)
+  REAL :: time1, time2, time3
+  REAL :: tbeg, tend
+
+  nnz = A_Csr%nnz; nr = A_Csr%nr; nc = A_Csr%nc
+  time1=0.; time2=0.; time3 = 0.
+  ALLOCATE(p(n))
+  !ALLOCATE(v_debug(n))
+  
+  threads = dim3(256,1,1); blocksCal = dim3(ceiling(n/dble(256)),1,1)
+  blocksRed = dim3(n,1,1); blocksMv = dim3(ceiling(nnz/dble(256)),1,1)
+  blocks1 = dim3(1,1,1)
+  !print*, '111'
+  
+  ALLOCATE(workspace(n), RedLmnt(2), RedLmnt_h(2), workspaceMv(nnz))
+  RedLmnt_h = (/1,n+1/); RedLmnt = RedLmnt_h
+  CALL cuDotP<<<blocksCal, threads>>>(x0, x0, n, workspace)
+  CALL cuRedAdd<<<blocks1, threads,256*8>>>(workspace, RedLmnt, beta, 1)
+  !print*, '112'
+  beta_host = beta
+  beta_host = sqrt(beta_host)
+  beta = beta_host
+  !print*, beta_host
+  !print*, '122'
+  ierr = cudaMemcpy(v, x0, n, cudaMemCpyDeviceToDevice)
+  CALL cusMulv<<<blocksCal, threads>>>(v(1:n), 1./beta_host, v(1:n), n)
+  !print*, '222'
+  !v_debug = v(1:n)
+  !print*, v_debug
+  
+  icount = 0;
+  reduced_rank = 0;
+  h = 0.;
+  val => A_Csr%d_csrVal; rowptr => A_Csr%d_csrRowPtr; colIdx => A_Csr%d_csrColIdx
+  DO i = 1, n-1 ! n-1 for last h(i+1, i)
+    !print*, 'sibal'
+    CALL cumv_Csr<<<blocksMv,threads>>>(val,rowptr,colIdx,nnz,nr,nc,v((i-1)*n+1:i*n),workspaceMv)
+    CALL CPU_TIME(tbeg)
+    CALL cuRedAdd<<<blocksRed,threads,256*8>>>(workspaceMv,rowptr,p,n)
+    CALL CPU_TIME(tend)
+    time1 = time1+(tend-tbeg)
+    !print*, '223'
+    !v_debug = p
+    !print*, v_debug, '//'
+    CALL CPU_TIME(tbeg)
+    DO j = 1, i
+      
+      CALL cuDotP<<<blocksCal,threads>>>(v((j-1)*n+1:j*n), p, n, workspace)      
+      CALL cuRedAdd<<<blocks1,threads,256*8>>>(workspace, RedLmnt, h_val, 1)
+      !print*, '2231'
+      h_val_host = h_val
+      ierr = cudamemcpy(h(j+(i-1)*n), h_val, 1, cudaMemcpyDeviceToDevice)      
+      CALL cuAddvv<<<blocksCal,threads>>>(p, v(1+(j-1)*n:j*n), 1._8, -h_val_host, p, n)
+
+      !print*, '2232'
+    END DO
+    CALL CPU_TIME(tend)
+    time2 = time2+(tend-tbeg)
+    
+    !print*, '233'
+    !v_debug = h(1+(i-1)*n:i*n)
+    !print*, v_debug, '//'
+    !print*, i, h_val_host;
+    !v_debug = p
+    !print*, v_debug, '//'
+    CALL CPU_TIME(tbeg)
+    CALL cuDotP<<<blocksCal,threads>>>(p,p,n,workspace)   
+    CALL cuRedAdd<<<blocks1,threads,256*8>>>(workspace, RedLmnt, h_val, 1)    
+    !print*, '2331'
+    h_val_host = h_val; !print*, i, h_val_host;
+    h_val_host=sqrt(h_val_host); h((i+1)+(i-1)*n) = h_val_host;
+    !print*, '2332'
+    
+    IF (i .EQ. 25) HmOut = ABS(h_val_host)
+    IF (i .GT. 25) THEN
+      HmOut = 0.5_8*(HmOut+ABS(h_val_host))
+      IF (HmOut .LT. 4._8) icount = icount+1
+      IF (icount .GE. 5) THEN
+        reduced_rank = i; exit
+      END IF
+    END IF
+    !print*, '22in'
+    CALL cusMulv<<<blocksCal,threads>>>(p, 1./h_val_host, v(1+i*n:(i+1)*n), n)
+    !v_debug = v(1+i*n:(i+1)*n)
+    !print*, 1./h_val_host
+    !print*, v_debug, '//'
+    CALL CPU_TIME(tend)
+    time3 = time3+(tend-tbeg)
+  END DO
+  !print*, '333'
+  DEALLOCATE(workspace, workspaceMv, RedLmnt, RedLmnt_h)
+  NULLIFY(val, rowptr, colIdx)
+  IF(reduced_rank .EQ. 0) reduced_rank = n-1
+  print*, time1, time2, time3
+
+  DEALLOCATE(p)
+  END SUBROUTINE
+  END SUBROUTINE
+  
+  SUBROUTINE MatExpSnS_cuda(A, x0, x1, rank)  
+  USE ieee_arithmetic
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: A(:)
+  REAL(8), INTENT(IN), DEVICE :: x0(:)
+  REAL(8), INTENT(INOUT), DEVICE :: x1(:)
+  INTEGER, INTENT(IN) :: rank
+
+  REAL(8), ALLOCATABLE, DEVICE :: ExpMat(:), Ahat(:)           ! Used for first Taylor Exponential and Scailing
+  INTEGER :: m, i, j
+  INTEGER :: SqrK, RecMulK, K                        ! K = SqrK + log_2(RecMulK) -> {exp(2**(-K)*A)}**(2**K)
+  INTEGER :: O_Taylor
+  REAL(8), ALLOCATABLE, DEVICE :: SaveSqrdMat(:)
+  REAL(8), ALLOCATABLE :: x_temp(:)
+  REAL :: MaxInA, Div
+  REAL(8), ALLOCATABLE :: A_mxfnd(:)
+  
+  TYPE(dim3) :: threads, blocksSMulV, blocksSqr, blocksRed
+  REAL(8), ALLOCATABLE, DEVICE :: workspace(:)
+  INTEGER, ALLOCATABLE, DEVICE :: RedLmnt(:)
+  INTEGER, ALLOCATABLE :: RedLmnt_h(:)
+  
+  REAL(8), ALLOCATABLE :: v_debug(:)
+
+  m = rank
+  ALLOCATE(Ahat(m*m), SaveSqrdMat(m*m), x_temp(m))
+  ALLOCATE(A_mxfnd(m*m))
+  
+  A_mxfnd = A
+  MaxInA = maxval(ABS(A_mxFnd))
+  DEALLOCATE(A_mxfnd)
+  !print*, MaxInA
+
+  K = INT(log(DBLE(MaxInA))/log(2.))
+  RecMulK = INT(log(DBLE(m))/log(2.))
+
+  IF (K .LT. RecMulK) THEN
+    IF (K .LE. 0) THEN
+      K = 1; SqrK = 0
+    END IF
+    RecMulK = 2**K
+  ELSE
+    SqrK = K - RecMulK
+    RecMulK = 2**RecMulK
+  END IF
+  threads = dim3(16,16,1); blocksSMulV = dim3(ceiling(m/dble(16)),ceiling(m/dble(16)),1); Div = 1._8/dble(2**K)
+  CALL cusMulv<<<blocksSMulV,threads>>>(A,Div,Ahat,m*m)
+  !print*, K
+  !ALLOCATE(v_debug(m*m))
+  !v_debug = Ahat
+  !print*, v_debug(1)
+  !DEALLOCATE(v_debug)
+  
+  O_Taylor = 8; blocksSqr = dim3(ceiling(m/dble(16)), ceiling(m/dble(16)), m)
+  blocksRed = dim3(m,m,1)
+  DO WHILE(.TRUE.)
+    ALLOCATE(ExpMat(m*m))
+    CALL MatExpTaylor_cuda(Ahat, ExpMat, O_Taylor, m)
+    SaveSqrdMat = ExpMat;
+    DEALLOCATE(ExpMat)
+    !! ----------------- Squaring the matrix exponentials, {{exp(A)}**2}**2 ...-----------
+    ALLOCATE( workspace(m*m*m), RedLmnt(m*m+1), RedLmnt_h(m*m+1))
+    DO i = 0, m*m
+      RedLmnt_h(i+1) = 1+m*i
+    END DO
+    RedLmnt = RedLmnt_h
+    DEALLOCATE(RedLmnt_h)
+    !ALLOCATE(v_debug(m*m)); 
+    DO i = 1, SqrK
+      !print*, '001'
+      CALL cumm<<<blocksSqr,threads>>>(SaveSqrdMat, SaveSqrdMat, m, m, m, workspace)
+      !print*, '011'
+      CALL cuRedAdd<<<blocksRed,threads,256*8>>>(workspace,RedLmnt,SaveSqrdMat,m*m)
+      !v_debug = SaveSqrdMat; print*, i, v_debug(1:10)  
+    END DO
+    !DEALLOCATE(v_debug)
+    DEALLOCATE(workspace, RedLmnt)
+    !print*, '111'
+    !! -----------------------------------------------------------------------------------
+    x1 = x0;
+      
+    !! -------------------- Recursively Multiplying on x0 Vector -------------------------
+    ALLOCATE(workspace(m*m), RedLmnt(m+1), RedLmnt_h(m+1))
+    DO i = 0, m
+      RedLmnt_h(i+1) = 1+m*i
+    END DO
+    RedLmnt = RedLmnt_h; blocksSqr = dim3(ceiling(m/dble(16)), ceiling(m/dble(16)), 1)
+    blocksRed = dim3(m,1,1)
+    DO i = 1, RecMulK
+      CALL cumv<<<blocksSqr,threads>>>(SaveSqrdMat, x1, m, m, workspace)
+      CALL cuRedAdd<<<blocksRed,threads,256*8>>>(workspace, RedLmnt, x1, m)
+      IF(i.LE.5) THEN
+        !x_temp = x1; print*, x_temp, m
+      END IF
+    END DO    
+    !! -----------------------------------------------------------------------------------
+    x_temp = x1
+    !! ----------------------------- Convergence Check -----------------------------------
+    IF (ANY(Ieee_is_nan(x_temp))) THEN
+      O_Taylor = O_Taylor + 4
+    ELSE
+      EXIT
+    END IF
+    IF (O_Taylor .GT. m) THEN
+      print*, 'Non Convergable Exponential Matrix with SnS'
+      STOP
+    END IF
+    !! -----------------------------------------------------------------------------------
+  END DO
+
+  DEALLOCATE(ExpMat, Ahat, SaveSqrdMat, x_temp)
+  
+  END SUBROUTINE
+  
+  SUBROUTINE MatExpTaylor_cuda(A, ExpA, order, rank)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: A(:)
+  REAL(8), INTENT(INOUT), DEVICE :: ExpA(:)
+  INTEGER, INTENT(IN) :: order, rank
+  
+  INTEGER :: i, j
+  REAL :: Coef
+  REAL(8), ALLOCATABLE, DEVICE :: SqrMat(:), SaveSqrMat(:), Exp_temp(:)
+  REAL(8), ALLOCATABLE :: eye(:)
+  
+  TYPE(dim3) :: blocksSqr, blocksRed, blocksAdd, threads
+  REAL(8), ALLOCATABLE, DEVICE :: workspace(:)
+  INTEGER, ALLOCATABLE, DEVICE :: RedLmnt(:)
+  INTEGER, ALLOCATABLE :: RedLmnt_h(:)
+  
+  ALLOCATE(SqrMat(rank*rank), SaveSqrMat(rank*rank), eye(rank*rank), Exp_temp(rank*rank))
+  ALLOCATE(workspace(rank*rank*rank), RedLmnt(rank*rank+1), RedLmnt_h(rank*rank+1))
+  DO i = 1, rank
+    eye(1+(i-1)*rank:i*rank) = 0._8
+    eye(i+(i-1)*rank) = 1._8
+  END DO
+  DO i = 0, rank*rank
+    RedLmnt_h(i+1) = 1+rank*i
+  END DO
+  RedLmnt = RedLmnt_h
+  threads = dim3(16,16,1); blocksSqr = dim3(ceiling(rank/dble(16)), ceiling(rank/dble(16)), rank)
+  blocksRed = dim3(rank,rank,1); blocksAdd = dim3(ceiling(rank*rank/dble(16)), ceiling(rank*rank/dble(16)),1)
+  
+  
+  ExpA = eye; SqrMat = A; SaveSqrMat = eye; Coef = 1.;
+  DEALLOCATE(eye)
+  DO i = 1, order
+    Coef = Coef/dble(i)
+    CALL cumm<<<blocksSqr,threads>>>(SqrMat, SaveSqrMat, rank, rank, rank, workspace)
+    CALL cuRedAdd<<<blocksRed,threads,256*8>>>(workspace,RedLmnt,SaveSqrMat,rank*rank)
+    CALL cuAddvv<<<blocksAdd,threads>>>(ExpA, SaveSqrMat, 1._8, Coef, Exp_temp, rank*rank)
+    ExpA = Exp_temp
+  END DO
+  
+  END SUBROUTINE
+    
+  ATTRIBUTES(GLOBAL) SUBROUTINE cumv_CSR(val, rowptr, colIdx, nnz, nr, nc, v0, Reduce_arr)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: val(:)
+  INTEGER, INTENT(IN), DEVICE :: rowptr(:), colIdx(:)
+  INTEGER, VALUE, INTENT(IN) :: nnz, nr, nc   
+  REAL(8), INTENT(IN), DEVICE :: v0(:) ! (nc)
+  
+  INTEGER :: thidx, thidy, thidz ! thidz would be 1 -- recommned not to use
+  REAL(8),INTENT(INOUT), DEVICE :: Reduce_arr(nnz)
+  INTEGER :: innz
+  REAL(8) :: val1, val2
+  INTEGER :: dum
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  innz = thidx+gridDim%x*blockDim%x*((thidy-1)+(gridDim%y*blockDim%y)*(thidz-1))
+  IF (innz .GT. nnz) RETURN
+  
+  ! Column Index on vector
+  dum = colIdx(innz);
+  
+  ! Calculate & Write Back
+  val1 = val(innz);  val2 = v0(dum)
+  Reduce_arr(innz) = val1*val2
+  CALL syncthreads()
+  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cumv(A, v0, m, n, ReduceArr)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: A(:), v0(:)
+  INTEGER, VALUE, INTENT(IN) :: m, n
+  
+  INTEGER :: thidx, thidy, thidz ! global-block : (m, n, 1), A = (m x n)
+  REAL(8), INTENT(INOUT), DEVICE :: ReduceArr(m*n)
+  REAL(8) :: val1, val2
+  INTEGER :: id
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y; thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z;
+  
+  IF (thidy .LE. n .AND. thidx .LE. m .AND. thidz .LE. 1) THEN
+    id = thidy+n*(thidx-1)
+    val1 = A(thidx+m*(thidy-1)); val2 = v0(thidy)
+    ReduceArr(id) = val1*val2
+    CALL syncthreads()
+  END IF  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cumm(A, B, m, n, k, ReduceArr)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: A(:), B(:)
+  INTEGER, VALUE, INTENT(IN) :: m, n, k
+  
+  INTEGER :: thidx, thidy, thidz ! global-block : (m, n, k), A = (m x n), B = (n x k)
+  REAL(8), INTENT(INOUT), DEVICE :: ReduceArr(m*n*k)
+  REAL(8) :: val1, val2
+  INTEGER :: id
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y; thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  IF (thidy .LE. n .AND. thidx .LE. m .AND. thidz .LE. k) THEN
+    id = thidy+n*((thidx-1)+m*(thidz-1))
+    val1 = A(thidx+m*(thidy-1)); val2 = B(thidy+n*(thidz-1))
+    ReduceArr(id) = val1*val2
+    CALL syncthreads()
+  END IF  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuDotP(v1, v2, n, ReduceArr)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: v1(:), v2(:)
+  INTEGER, VALUE, INTENT(IN) :: n
+  
+  INTEGER :: thidx, thidy, thidz ! thidz would be 1 -- recommned not to use
+  REAL(8),INTENT(INOUT),DEVICE :: ReduceArr(n)
+  REAL(8) :: val1, val2
+  INTEGER :: id
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  id = thidx+gridDim%x*blockDim%x*((thidy-1)+(gridDim%y*blockDim%y)*(thidz-1))
+  
+  IF (id .LE. n) THEN    
+    val1 = v1(id); val2 = v2(id);
+    ReduceArr(id) = val1*val2
+  END IF
+  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuAddvv(v1, v2, a, b, v3, n)
+  ! ----------------------------------------------------------------
+  !                       v3 = a*v1 + b*v2                         !
+  ! ----------------------------------------------------------------
+  IMPLICIT NONE
+  REAL(8), INTENT(INOUT), DEVICE :: v1(:), v2(:)
+  REAL(8), VALUE, INTENT(IN) :: a, b
+  INTEGER, VALUE, INTENT(IN) :: n
+  REAL(8), INTENT(INOUT), DEVICE :: v3(:)
+  
+  INTEGER :: thidx, thidy, thidz ! thidz would be 1 -- recommned not to use
+  INTEGER :: id
+  REAL(8) :: val1, val2, val3
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  id = thidx+(thidy-1)*(gridDim%x*blockDim%x+(thidz-1)*(gridDim%y*blockDim%y))
+  IF (id .GT. n) RETURN
+  
+  val1 = a; val2 = v1(id); val3 = val1*val2
+  val1 = b; val2 = v2(id); val3 = val3+val1*val2
+  v3(id) = val3
+  CALL syncthreads()  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cusMulv(v0, a, v1, n)
+  ! ----------------------------------------------------------------
+  !                       v3 = a*v1 + b*v2                         !
+  ! ----------------------------------------------------------------
+  IMPLICIT NONE
+  REAL(8), INTENT(INOUT), DEVICE :: v0(:)
+  REAL(8), VALUE, INTENT(IN) :: a
+  INTEGER, VALUE, INTENT(IN) :: n
+  REAL(8), INTENT(INOUT), DEVICE :: v1(:)
+  
+  INTEGER :: thidx, thidy, thidz ! thidz would be 1 -- recommned not to use
+  INTEGER :: id
+  REAL(4) :: val1, val2
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  id = thidx+(thidy-1)*(gridDim%x*blockDim%x+(thidz-1)*(gridDim%y*blockDim%y))
+  IF (id .GT. n) RETURN
+  
+  val1 = a; val2 = v0(id);
+  v1(id) = val1*val2
+  CALL syncthreads()  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuRedAdd(ReduceArr, RedLmnt, vout, NofRed)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: ReduceArr(:)
+  INTEGER, INTENT(IN), DEVICE :: RedLmnt(:)
+  INTEGER, VALUE :: NofRed
+  REAL(8), INTENT(INOUT), DEVICE :: vout(NofRed)
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: redval(0:2)
+  INTEGER :: i, j
+  INTEGER :: id, thidx, thidy, thidz, blckid, blcksize
+  INTEGER :: ired, IterOut, IterIn, NofBlock
+  INTEGER :: halfwidth, iyN
+  INTEGER :: offset, onset
+  
+  thidx = threadIdx%x; thidy = threadIdx%y; thidz = threadIdx%z;
+  id = thidx+(thidy-1)*(blockDim%y+(thidz-1)*blockDim%z)
+  blckid = blockIdx%x+gridDim%x*((blockIdx%y-1)+gridDim%y*(blockIdx%z-1))
+  blcksize = blockdim%x*blockdim%y*blockdim%z
+  NofBlock = griddim%x*griddim%y*griddim%z
+  
+  redval(1) = 0.0
+  
+  ! Reduce
+  IterOut = CEILING(NofRed/dble(NofBlock))
+  DO  i =1, IterOut
+    ired = (i-1)*NofBlock+blckid
+    ReduceBlock(id) = 0.0
+    CALL syncthreads()
+    IF (ired .LE. NofRed) THEN
+      onset = RedLmnt(ired)
+      offset = RedLmnt(ired+1)
+      IterIn = CEILING((offset-onset)/DBLE(blcksize))
+      DO j = 1, IterIn
+        iyN = (j-1)*blcksize+id+onset-1 
+        IF(iyN .LT. offset) THEN
+          redval(0) = ReduceArr(iyN)
+          !IF(ired.EQ.1 .AND. NofRed .EQ. 15) &
+          !print*, iyN, redval(0)
+        ELSE
+          redval(0) = 0.0
+        END IF
+        CALL syncthreads()
+        ReduceBlock(id) = ReduceBlock(id) + redval(0)
+        !CALL syncthreads()
+      END DO
+      !IF (ired.EQ.NofRed) print*, 0, id, ReduceBlock(id)
+      
+      iyN = blcksize; halfwidth = iyN/2
+      DO WHILE(halfwidth .GT. 0)
+        iyN = iyN-halfwidth
+        IF (id .LE. iyN) THEN
+          redval(2) = ReduceBlock(id); redval(0) = ReduceBlock(id+halfwidth)
+          ReduceBlock(id) = redval(2)+redval((iyN-id)/halfwidth)
+        END IF
+        halfwidth = iyN/2
+        CALL syncthreads()
+      END DO
+      IF (id .EQ. 1) vout(ired) = ReduceBlock(id)
+      !IF (ired .EQ. NofRed .AND. id .EQ. 1) print*, NofRed, ReduceBlock(id)
+      !IF (ired .EQ. 1 .AND. NofRed .EQ. 15) print*, id, ReduceBlock(id)
+      CALL syncthreads()
+    END IF
+  END DO
+  
+  END SUBROUTINE

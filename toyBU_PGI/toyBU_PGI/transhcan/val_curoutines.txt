@@ -1,0 +1,123 @@
+!  Fortran Source File 
+!
+  REAL, ALLOCATABLE :: C_ref(:,:), v3_ref(:), v1_ref(:), A_inp(:,:), B_inp(:,:), v0_inp(:), v1_inp(:), v2_inp(:)
+  REAL, ALLOCATABLE :: C_ker(:,:), v3_ker(:), v1_ker(:)
+  REAL :: coef1, coef2, dotP_ref, norm2_ref, dotP_ker, norm2_ker
+  REAL(8), ALLOCATABLE, DEVICE :: A_d(:), B_d(:), v0_d(:), v1_d(:), v2_d(:), v3_d(:), workspace(:)
+  REAL(8), DEVICE :: dotP_d, norm2_d
+  REAL(8), POINTER, DEVICE :: C_1d(:)
+  REAL(8), POINTER :: C_1h(:)
+  INTEGER, ALLOCATABLE, DEVICE :: RedLmnt(:)
+  INTEGER, ALLOCATABLE :: RedLmnt_h(:)
+  REAL, ALLOCATABLE :: v_val(:), mat_val(:,:)
+  TYPE(dim3) :: blocks, threads
+
+  ALLOCATE(A_inp(NofIso,NofIso), B_inp(NofIso, NofIso), v0_inp(NofIso), v1_inp(NofIso), v2_inp(NofIso))
+  ALLOCATE(C_ref(NofIso,NofIso), v1_ref(NofIso), v3_ref(NofIso))
+  ALLOCATE(A_d(NofIso*NofIso), B_d(NofIso*NofIso), v0_d(NofIso), v1_d(NofIso), v2_d(NofIso), v3_d(NofIso))
+  ALLOCATE(C_ker(NofIso,NofIso), v3_ker(NofIso), v1_ker(NofIso))
+  ALLOCATE(v_val(NofIso), mat_val(NofIso,NofIso))
+  ALLOCATE(C_1d(NofIso*NofIso), C_1h(NofIso*NofIso))
+  
+  A_inp(:,:) = Amat(:,:); B_inp(:,:) = Amat(:,:); v0_inp(:) = V0(:); v1_inp(:) = V0(:); v2_inp(:) = Vref(:)
+  coef1 = 3.5; coef2 = 1.2;
+  
+  C_ref = MATMUL(A_inp, B_inp); v1_ref = MATMUL(A_inp, v0_inp); v3_ref = coef1*v1_inp(:)+coef2*v2_inp(:)
+  dotP_ref = DOT_PRODUCT(v1_inp,v2_inp); norm2_ref = sqrt(DOT_PRODUCT(v0_inp, v0_inp))
+  DO i = 1, NofIso
+  A_d(1+(i-1)*NofIso:i*NofIso) = A_inp(:,i); B_d(1+(i-1)*NofIso:i*NofIso) = B_inp(:,i)
+  END DO
+  C_1d(:) = 0.; v0_d(:) = v0_inp(:);
+  
+  !! ------------- cumv_Csr
+  ALLOCATE(workspace(Amat_Csr%nnz))
+  threads = dim3(256,1,1); blocks = dim3(ceiling(Amat_Csr%nnz/dble(256)),1,1)
+  CALL cumv_CSR<<<blocks,threads>>>(Amat_Csr%d_csrVal, Amat_Csr%d_csrrowptr, Amat_Csr%d_csrcolIdx, &
+    Amat_Csr%nnz, Amat_Csr%nr, Amat_Csr%nc, v0_d, workspace)
+  threads = dim3(16,16,1); blocks = dim3(NofIso, 1, 1)
+  CALL cuRedAdd<<<blocks,threads,256*8>>>(workspace, Amat_Csr%d_csrrowptr, v1_d, NofIso)
+  v1_ker = v1_d
+  v_val(:) = ABS(v1_ref(:)-v1_ker(:))/max(1e-40,abs(v1_ref(:)))
+  print*, sum(v_val/dble(NofIso))
+  !print*, v_val
+  !print*, v1_ker(NofIso-10:NofIso)
+  !print*, v1_ref(NofIso-10:NofIso)
+  DEALLOCATE(workspace)
+  ! ------------- cumm
+  ALLOCATE(workspace(NofIso*NofIso*NofIso), RedLmnt_h(NofIso*NofIso+1), RedLmnt(NofIso*NofIso+1))
+  DO i = 0, NofIso*NofIso
+    RedLmnt_h(i+1) = 1+i*NofIso
+  END DO
+  RedLmnt = RedLmnt_h
+  threads = dim3(16,16,1)
+  blocks = dim3(ceiling(NofIso/dble(16)),ceiling(NofIso/dble(16)),ceiling(NofIso/dble(1)))
+  CALL cumm<<<blocks,threads>>>(A_d, B_d, NofIso, NofIso, NofIso, workspace)
+  blocks = dim3(NofIso, NofIso, 1)
+  CALL cuRedAdd<<<blocks,threads,256*8>>>(workspace, RedLmnt, C_1d, NofIso*NofIso)
+  C_1h = C_1d
+  DO i = 1, NofIso
+    C_ker(:,i) = C_1h((i-1)*NofIso+1: i*NofIso)
+  END DO
+  mat_val(:,:) = ABS(C_ref(:,:)-C_ker(:,:))/max(1e-40,abs(C_ref(:,:)))
+  !print*, sum(mat_val/dble(NofIso))
+  DO i = 1, NofIso
+    print*,'--------------------------------'
+    print*, C_ker(:,i)
+    print*, C_ref(:,i)
+    print*,'--------------------------------'
+  END DO
+  DEALLOCATE(workspace, RedLmnt_h, RedLmnt)
+  ! ------------- cumv
+  ALLOCATE(workspace(NofIso*NofIso), RedLmnt_h(NofIso+1),RedLmnt(NofIso+1))
+  DO i  = 0, NofIso
+    RedLmnt_h(i+1) = 1+i*NofIso
+  END DO
+  RedLmnt(:) = RedLmnt_h(:)
+  threads = dim3(16,16,1); blocks = dim3(ceiling(NofIso/dble(16)),ceiling(NofIso/dble(16)),1)
+  CALL cumv<<<blocks,threads>>>(A_d, v0_d, NofIso, NofIso, workspace)
+  blocks = dim3(16, ceiling(NofIso/dble(16)),1)
+  CALL cuRedAdd<<<blocks,threads,256*8>>>(workspace, RedLmnt, v1_d, NofIso)
+  v1_ker = v1_d
+  v_val(:) = ABS(v1_ref(:)-v1_ker(:))/max(1e-40,abs(v1_ref(:)))
+  !print*, sum(v_val/dble(NofIso))
+  print*, v1_ker(NofIso-10:NofIso)
+  print*, v1_ref(NofIso-10:NofIso)
+  DEALLOCATE(workspace, RedLmnt, RedLmnt_h)
+
+  !! ------------- cuAddvv
+  v1_d(:) = v1_inp(:); v2_d(:) = v2_inp(:)
+  threads = dim3(256,1,1)
+  blocks = dim3(ceiling(NofIso/dble(threads%x)), 1,1)
+  !print*, threads, '&', blocks
+  CALL cuAddvv<<<blocks,threads>>>(v1_d, v2_d, coef1, coef2, v3_d, NofIso)
+  v3_ker = v3_d
+  v_val = ABS(v3_ker(:)-v3_ref(:))/max(1.e-40,abs(v3_ref(:)))
+  print*, sum(v_val(:)/NofIso)
+  !! ------------- cuDotP
+  ALLOCATE(workspace(NofIso), RedLmnt_h(2),RedLmnt(2))
+  v1_d = v1_inp; v2_d = v2_inp
+  DO i  = 0, 1
+    RedLmnt_h(i+1) = 1+i*NofIso
+  END DO
+  RedLmnt(:) = RedLmnt_h(:)
+  threads = dim3(16,16,1); blocks = dim3(ceiling(NofIso/dble(16)),1,1)
+  CALL cuDotP<<<blocks,threads>>>(v1_d, v2_d, NofIso, workspace)
+  blocks = dim3(1,1,1)
+  CALL cuRedAdd<<<blocks,threads,256*8>>>(workspace, RedLmnt, dotP_d, 1)
+  dotP_ker = dotP_d
+  print*, dotP_ker, dotP_ref
+  DEALLOCATE(workspace, RedLmnt, RedLmnt_h)
+  !! ------------- cuNorm2v
+  ALLOCATE(workspace(NofIso), RedLmnt_h(2),RedLmnt(2))
+  v0_d = v0_inp
+  DO i  = 0, 1
+    RedLmnt_h(i+1) = 1+i*NofIso
+  END DO
+  RedLmnt(:) = RedLmnt_h(:)
+  threads = dim3(16,16,1); blocks = dim3(ceiling(NofIso/dble(16)),1,1)
+  CALL cuDotP<<<blocks,threads>>>(v0_d, v0_d, NofIso, workspace)
+  blocks = dim3(1,1,1)
+  CALL cuRedAdd<<<blocks,threads,256*8>>>(workspace, RedLmnt, norm2_d, 1)
+  norm2_ker = norm2_d; norm2_ker = sqrt(norm2_ker)
+  print*, norm2_ker, norm2_ref
+  DEALLOCATE(workspace, RedLmnt, RedLmnt_h)

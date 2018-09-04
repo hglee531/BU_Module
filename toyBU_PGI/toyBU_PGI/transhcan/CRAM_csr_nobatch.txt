@@ -1,0 +1,101 @@
+!  Fortran Source File 
+!
+  SUBROUTINE MatExpCRAM_CSR(lOutMat, A_Csr, ExpA_Csr, x0, x1, numthread)
+  USE AuxilCSR
+  IMPLICIT NONE
+  INCLUDE 'mkl_pardiso.fi'
+
+  LOGICAL, INTENT(IN) :: lOutMat
+  TYPE(CSR_DOUBLE), INTENT(IN) :: A_Csr
+  TYPE(CSR_DOUBLE), INTENT(INOUT) :: ExpA_Csr
+  REAL, INTENT(IN) :: x0(:)
+  REAL, INTENT(INOUT)  :: x1(:)
+  INTEGER, INTENT(IN), OPTIONAL :: numthread
+
+  INTEGER :: i, j, k
+  INTEGER :: nr, nc, nnz, rank
+  INTEGER :: Half_Order
+  COMPLEX(8), ALLOCATABLE :: AZ(:,:)
+  TYPE(CSR_DOUBLE_COMPLEX) :: A_CsrZ
+  COMPLEX(8), ALLOCATABLE :: valZ(:), valZ_batch(:)
+  INTEGER, ALLOCATABLE :: rowptr(:), colIdx(:), eyeIdx(:)
+  INTEGER, ALLOCATABLE :: rowptr_batch(:), colIdx_batch(:)
+
+  INTEGER :: live_nt
+  TYPE(MKL_PARDISO_HANDLE) :: pt(64)
+  INTEGER :: iparm(64)
+  INTEGER :: maxfct, mnum, mtype, phase, n, nrhs, error, msglvl
+  INTEGER, ALLOCATABLE :: perm(:)
+
+  COMPLEX(8), ALLOCATABLE :: x_temp(:), x_temp_sol(:)
+  COMPLEX(8) :: temp_pole
+
+  IF (lOutMat) THEN
+    print*, 'Exponential Matrix Output with CSR Format Is Not Serviced on CRAM_CSR'
+    print*, '( lOutMat = .TRUE.  is not available )'
+    return
+  END IF
+
+  IF (PRESENT(numthread)) THEN
+    live_nt = min(mkl_get_max_threads(), numthread)
+  ELSE
+    live_nt = mkl_get_max_threads()
+  END IF
+  CALL mkl_set_num_threads(live_nt)
+
+  nr = A_Csr%nr;  rank = nr
+  Half_Order = CRAM_Order/2
+
+  IF (lOutMat) THEN
+    nrhs = Half_Order
+  ELSE
+    nrhs = 1
+  END IF
+  maxfct = 1; mnum = 1; mtype = 13; phase = 13; msglvl = 0; error = 0
+  ALLOCATE(perm(nr))
+  iparm(:) = 0; perm(:) = 0
+  DO i = 1, 64
+    pt(i)%DUMMY = 0
+  END DO
+
+  ! iparm configuration
+  iparm(1) = 1; iparm(2) = 0; iparm(8) = 1;
+  iparm(10) = 8; iparm(18) = -1; iparm(19) = -1
+
+  ALLOCATE(AZ(rank,rank),x_temp(rank), x_temp_sol(rank))     ! one by one
+  
+  CALL CSR2FullZ(AZ, A_Csr)
+  DO i = 1, rank
+    AZ(i,i) = AZ(i,i) - 1.
+  END DO
+  CALL FullZ2CSRZ(AZ, A_CsrZ)
+  nnz = A_CsrZ%nnz; nr = A_CsrZ%nr; nc = A_CsrZ%nc;
+  ALLOCATE(valZ(nnz), rowptr(nr+1), colIdx(nnz), eyeIdx(nr))
+  rowptr(:) = A_CsrZ%csrRowPtr(:); colIdx(:) = A_CsrZ%csrColIdx(:); valZ(:) = A_CsrZ%csrVal(:)
+  DO i = 1, nr
+    DO j = rowptr(i),rowptr(i+1)-1
+      IF (colIdx(j) .EQ. i) THEN
+        eyeIdx(i) = j; CYCLE
+      END IF
+    END DO
+  END DO
+  
+  x1(:) = x0(:)*Res0
+
+  ! one by one
+  DO i = 1, Half_Order
+    valZ(:) = A_CsrZ%csrVal(:); temp_pole = Pole(i) - 1.;
+    DO j = 1, nr
+      valZ(eyeIdx(j)) = valZ(eyeIdx(j))-temp_pole
+    END DO   
+    x_temp(:) = 2.*x0(:)*Res(i)
+    CALL pardiso(pt, maxfct, mnum, mtype, phase, rank, valZ, rowptr, colIdx, &
+      perm, nrhs, iparm, msglvl, x_temp, x_temp_sol, error)
+    x1(:) = x1(:)+DBLE(x_temp_sol)    
+  END DO
+  
+  
+  !DEALLOCATE(valZ, rowptr, colIdx)
+  DEALLOCATE(perm, AZ, x_temp, x_temp_sol)
+  DEALLOCATE(valZ_batch, rowptr_batch, colIdx_batch)
+  END SUBROUTINE

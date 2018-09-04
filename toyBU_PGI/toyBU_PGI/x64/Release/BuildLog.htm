@@ -1,0 +1,13 @@
+<HTML>
+<H1>PVF Build Log</H1>
+<P>Compiling Project  ...</P>
+<P>main.f90</P>
+<P>c:\program files\pgi\win64\15.10\bin\pgfortran.exe -Hx,123,8 -Hx,123,0x40000 -Hx,0,0x40000000 -Mx,0,0x40000000 -Hx,0,0x20000000 -Mpreprocess -Bstatic -Mbackslash -mp -acc -Mmpi=msmpi -Mcuda=fastmath,maxregcount:32 -Mfree -I"F:\Archive\toy\Depletion\toyBU_PGI\toyBU_PGI\" -I" C:\Program Files (x86)\IntelSWTools\compilers_and_libraries_2016.3.207\windows\mkl\include" -I"c:\program files\pgi\win64\15.10\include" -I"C:\Program Files\PGI\Microsoft Open Tools 12\include" -I"C:\Program Files (x86)\Windows Kits\8.1\Include\shared" -I"C:\Program Files (x86)\Windows Kits\8.1\Include\um" -fast -Kieee -Minform=warn -module "x64\Release" -o "x64\Release\main.obj" -r8 -c "F:\Archive\toy\Depletion\toyBU_PGI\toyBU_PGI\main.f90"</P>
+<P>Command exit code: 0</P>
+<hr>
+<P>Linking...</P>
+<P>c:\program files\pgi\win64\15.10\bin\pgfortran.exe -Wl,/libpath:"c:\program files\pgi\win64\15.10\lib" -Wl,/libpath:"C:\Program Files\PGI\Microsoft Open Tools 12\lib\amd64" -Wl,/libpath:"C:\Program Files (x86)\Windows Kits\8.1\Lib\winv6.3\um\x64" -Yl,"C:\Program Files\PGI\Microsoft Open Tools 12\bin\amd64" -Bstatic -mp -acc -Mmpi=msmpi -Mcuda=fma,fastmath,maxregcount:32 -stack=100000000 -o "F:\Archive\toy\Depletion\toyBU_PGI\toyBU_PGI\x64\Release\toyBU_PGI.exe" -Mcudalib=cublas,cusparse "x64\Release\AuxiliaryCSR.obj" "x64\Release\BasicOperations.obj" "x64\Release\CSRMATRIX.obj" "x64\Release\CUDAinitialize.obj" "x64\Release\main.obj" "x64\Release\MatExp_Mod.obj" "x64\Release\MatExpMod.obj" "x64\Release\param.obj" </P>
+<P>Command exit code: 0</P>
+<P>toyBU_PGI build succeeded.
+</P>
+</HTML>

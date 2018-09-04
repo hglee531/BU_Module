@@ -1,0 +1,515 @@
+MODULE CUDABASIC
+  USE CUDAFOR
+  USE, intrinsic :: iso_c_binding
+  IMPLICIT NONE
+  REAL(8), ALLOCATABLE, DEVICE  :: val(:), A(:), B(:), C(:), v0(:), v1(:), v2(:), v3(:)
+  INTEGER, ALLOCATABLE, DEVICE  :: rowptr(:), colIdx(:)
+  REAL(8), DEVICE           :: coef1, coef2
+  INTEGER, DEVICE           :: m, n, k, nnz, nr, nc
+  REAL(8), DEVICE           :: dotP, norm
+  PRIVATE :: val, A, B, C, v0, v1, v2, v3, rowptr, colIdx, m, n, k, nnz, nr, nc, dotP, norm
+  
+  CONTAINS
+  
+  SUBROUTINE cumv_CSR(pval, prowptr, pcolIdx, xnnz, xnr, xnc, pv0, pv1, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pval, pv0, pv1, prowptr, pcolIdx
+  INTEGER :: xnnz, xnr, xnc
+  TYPE(dim3) :: threads, blocks
+  
+  INTEGER :: SHRBytes
+  
+  SHRBytes = get_shared_bytes(threads)
+  
+  nnz = xnnz; nr = xnr; nc = xnc
+  call c_f_pointer(pval, val, xnnz);
+  call c_f_pointer(prowptr, rowptr, xnr+1);
+  CALL c_f_pointer(pcolIdx, colIdx, xnnz);
+  call c_f_pointer(pv0, v0, xnr);
+  call c_f_pointer(pv1, v1, xnr);
+  !val => pval; rowptr => prowptr; colIdx => pcolIdx
+  !v0 => pv0; v1 => pv1
+  
+  CALL cumv_CSR_dev<<<blocks, threads, SHRBytes>>>
+  
+  !NULLIFY(val, rowptr, colIdx, v0, v1)
+  END SUBROUTINE
+  
+  SUBROUTINE cumv(pA, pv0, xm, xn, pv1, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pA, pv0, pv1
+  INTEGER :: xm, xn
+  TYPE(dim3) :: threads, blocks
+  
+  INTEGER :: SHRBytes
+  
+  SHRBytes = get_shared_bytes(threads)
+  m = xm; n = xn
+  CALL c_f_pointer(pA, A, xm*xn);
+  call c_f_pointer(pv0, v0, xn);
+  call c_f_pointer(pv1, v1, xm);
+  !A => pA; v0 => pv0; v1 => pv1
+  
+  CALL cumv_dev<<<blocks, threads, SHRBytes>>>
+  
+  !NULLIFY(A, v0, v1)
+  END SUBROUTINE
+  
+  SUBROUTINE cumm(pA, pB, xm, xn, xk, pC, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pA, pB, pC
+  INTEGER :: xm, xn, xk
+  TYPE(dim3) :: threads, blocks
+  
+  INTEGER :: SHRBytes
+  
+  SHRBytes = get_shared_bytes(threads)
+  m = xm; n = xn; k = xk
+  CALL c_f_pointer(pA, A, xm*xn);
+  CALL c_f_pointer(pB, B, xn*xk);
+  CALL c_f_pointer(pC, C, xm*xk);
+  !A => pA; B => pB; C => pC;
+  
+  CALL cumm_dev<<<blocks, threads, SHRBytes>>>
+  
+  !NULLIFY(A, B, C)
+  END SUBROUTINE
+  
+  SUBROUTINE cuDotP(pv1, pv2, xn, xdotP, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pv1, pv2
+  INTEGER :: xn
+  REAL(8) :: xdotP
+  TYPE(dim3) :: threads, blocks
+  
+  INTEGER :: ierr
+  
+  INTEGER :: SHRBytes
+  
+  SHRBytes = get_shared_bytes(threads)
+  n = xn
+  call c_f_pointer(pv1, v1, (/xn/));
+  call c_f_pointer(pv2, v2, (/xn/));
+  !v1 => pv1; v2 => pv2
+  
+  CALL cuDotP_dev<<<blocks, threads, SHRBytes>>>
+  xdotP = dotP
+  
+  !NULLIFY(v1, v2)
+  END SUBROUTINE
+  
+  SUBROUTINE cuNorm2(pv1, xn, xnorm, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pv1
+  INTEGER :: xn
+  REAL(8) :: xnorm
+  TYPE(dim3) :: threads, blocks
+  
+  INTEGER :: SHRBytes, ierr
+  
+  SHRBytes = get_shared_bytes(threads)
+  n = xn;
+  call c_f_pointer(pv1, v1, xn);
+  !v1 => pv1
+  !print*, 'copy over v1'
+  
+  CALL cuNorm2_dev<<<blocks, threads, SHRBytes>>>
+  xnorm = norm
+  !xnorm = 0.0
+  !NULLIFY(v1)
+  END SUBROUTINE
+  
+  SUBROUTINE cuAddvv(pv1, pv2, xCoef1, xCoef2, pv3, xn, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pv1, pv2, pv3
+  INTEGER :: xn
+  REAL(8) :: xCoef1, xCoef2
+  TYPE(dim3) :: threads, blocks
+  
+  CALL c_f_pointer(pv1, v1, xn)
+  CALL c_f_pointer(pv2, v2, xn)
+  CALL c_f_pointer(pv3, v3, xn)
+  !v1 => pv1; v2 => pv2; v3 => pv3
+  n = xn; coef1 = xCoef1; coef2 = xCoef2
+  
+  CALL cuAddvv_dev<<<blocks, threads>>>
+  
+  !NULLIFY(v1, v2, v3);
+  END SUBROUTINE
+  
+  SUBROUTINE cusMulv(pv0, xCoef1, pv1, xn, blocks, threads)
+  IMPLICIT NONE
+  TYPE(c_devptr) :: pv0, pv1
+  INTEGER :: xn
+  REAL(8) :: xCoef1
+  TYPE(dim3) :: threads, blocks
+  
+  CALL c_f_pointer(pv0, v0, xn)
+  CALL c_f_pointer(pv1, v1, xn)
+  !v0 => pv0; v1 => pv1
+  coef1 = xCoef1; n = xn
+  
+  CALL cusMulv_dev<<<blocks, threads>>>
+  
+  !NULLIFY(v0, v1)
+  END SUBROUTINE
+  
+  INTEGER FUNCTION get_shared_bytes(threads)
+  IMPLICIT NONE
+  TYPE(dim3) :: threads
+  get_shared_bytes = threads%x*threads%y*threads%z*8
+  END FUNCTION
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cumv_CSR_dev
+  IMPLICIT NONE
+  
+  INTEGER :: ThId, BkId, NofBlock, BkSize, halfwidth
+  INTEGER :: IterOut, IterIn, Ir, Ic, onset, offset
+  INTEGER :: i,j
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: val1, val2
+  REAL(8) :: redval(0:2)
+  
+  NofBlock = GridDim%x*GridDim%y*GridDim%z; BkSize = BlockDim%x*BlockDim%y*BlockDim%z
+  ThId = ThreadIdx%z; ThId = BlockDim%y*(ThId-1)+ThreadIdx%y; ThId = BlockDim%x*(ThId-1)+ThreadIdx%x
+  BkId = BlockIdx%z; BkId = GridDim%y*(BkId-1)+BlockIdx%y; BkId = GridDim%x*(BkId-1)+BlockIdx%x
+  
+  ! Reduce
+  redval(1) = 0.0
+  IterOut = CEILING(nr/real(NofBlock,4))
+  DO  i =1, IterOut
+    Ir = (i-1)*NofBlock+BkId
+    redval(2) = 0.0
+    IF (Ir .LE. nr) THEN
+      onset = rowptr(Ir)
+      offset = rowptr(Ir+1)
+      IterIn = CEILING((offset-onset)/real(Bksize,4))
+      DO j = 1, IterIn
+        Ic = (j-1)*Bksize+ThId+onset-1
+        IF(Ic .LT. offset) THEN
+          val1 = val(Ic); val2 = v0(colIdx(Ic))
+          redval(0) = val1*val2
+        ELSE
+          redval(0) = 0.0
+        END IF
+        redval(2) = redval(2)+redval(0)
+      END DO
+      ReduceBlock(ThId) = redval(2)
+      CALL syncthreads()
+      
+      Ic = BkSize; halfwidth = Ic/2
+      DO WHILE(halfwidth .GT. 0)
+        Ic = Ic-halfwidth
+        IF (ThId .LE. Ic) THEN
+          redval(2) = ReduceBlock(ThId); redval(0) = ReduceBlock(ThId+halfwidth)
+          ReduceBlock(ThId) = redval(2)+redval((Ic-ThId)/halfwidth)
+        END IF
+        halfwidth = Ic/2
+        CALL syncthreads()
+      END DO
+      IF (ThId .EQ. 1) v1(Ir) = ReduceBlock(ThId)
+    END IF
+  END DO
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cumv_dev
+  IMPLICIT NONE
+  
+  INTEGER :: ThId, BkId, NofBlock, BkSize, halfwidth
+  INTEGER :: IterOut, IterIn, Ir, Ic, IrA
+  INTEGER :: i, j
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: val1, val2
+  REAL(8) :: redval(0:2)
+  
+  NofBlock = GridDim%x*GridDim%y*GridDim%z; BkSize = BlockDim%x*BlockDim%y*BlockDim%z
+  ThId = ThreadIdx%z; ThId = BlockDim%y*(ThId-1)+ThreadIdx%y; ThId = BlockDim%x*(ThId-1)+ThreadIdx%x
+  BkId = BlockIdx%z; BkId = GridDim%y*(BkId-1)+BlockIdx%y; BkId = GridDim%x*(BkId-1)+BlockIdx%x
+  
+  ! Reduce
+  redval(1) = 0.0
+  IterOut = CEILING(m/real(NofBlock,4))
+  DO  i =1, IterOut
+    Ir = (i-1)*NofBlock+BkId
+    redval(2) = 0.0
+    IF (Ir .LE. m) THEN
+      IterIn = CEILING(n/real(Bksize,4))
+      DO j = 1, IterIn
+        Ic = (j-1)*BkSize+Thid
+        IrA = (Ic-1)*m+Ir
+        IF(Ic .LE. n) THEN
+          val1 = A(IrA); val2 = v0(Ic)
+          redval(0) = val1*val2
+        ELSE
+          redval(0) = 0.0
+        END IF
+        redval(2) = redval(2)+redval(0)
+      END DO
+      ReduceBlock(ThId) = redval(2)
+      CALL syncthreads()
+      
+      Ic = BkSize; halfwidth = Ic/2
+      DO WHILE(halfwidth .GT. 0)
+        Ic = Ic-halfwidth
+        IF (ThId .LE. ic) THEN
+          redval(2) = ReduceBlock(ThId); redval(0) = ReduceBlock(ThId+halfwidth)
+          ReduceBlock(ThId) = redval(2)+redval((Ic-ThId)/halfwidth)
+        END IF
+        halfwidth = Ic/2
+        CALL syncthreads()
+      END DO
+      IF (ThId .EQ. 1) v1(Ir) = ReduceBlock(ThId)
+    END IF
+  END DO
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cumm_dev
+  IMPLICIT NONE
+  
+  INTEGER :: ThId, BkId, NofBlock, BkSize
+  INTEGER :: IterOut, IterIn
+  INTEGER :: Icr, Ic, Ir, IA, IB        ! Icr = (Ic-1)*m+Ir
+  INTEGER :: i, j, Onset
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: val1, val2
+  REAL(8) :: redval(0:2)
+  
+  NofBlock = GridDim%x*GridDim%y*GridDim%z; BkSize = BlockDim%x*BlockDim%y*BlockDim%z
+  ThId = ThreadIdx%z; ThId = BlockDim%y*(ThId-1)+ThreadIdx%y; ThId = BlockDim%x*(ThId-1)+ThreadIdx%x
+  BkId = BlockIdx%z; BkId = GridDim%y*(BkId-1)+BlockIdx%y; BkId = GridDim%x*(BkId-1)+BlockIdx%x
+  
+  ! Reduce
+  redval(1) = 0.0
+  IterOut = CEILING(m*k/real(NofBlock,4))
+  DO  i =1, IterOut
+    Icr = (i-1)*NofBlock+BkId
+    redval(2) = 0.0
+    IF (Icr .LE. m*k) THEN
+      Ir = mod(Icr-1,m)+1; Ic = (Icr-Ir)/m + 1      ! on C
+      IterIn = CEILING(n/real(Bksize,4))
+      DO j = 1, IterIn
+        Onset = (j-1)*BkSize+ThId
+        IA = (Onset-1)*m+Ir
+        IB = Onset+(Ic-1)*k
+        IF (Onset .LE. n) THEN
+          val1 = A(IA); val2 = B(IB)
+          redval(0) = val1*val2
+        ELSE
+          redval(0) = 0.0
+        END IF
+        redval(2) = redval(2)+redval(0)
+      END DO
+      ReduceBlock(ThId) = redval(2)
+      CALL syncthreads()
+      
+      Ic = BkSize; Onset = Ic/2
+      DO WHILE(Onset .GT. 0)
+        Ic = Ic-Onset
+        IF (ThId .LE. Ic) THEN
+          redval(2) = ReduceBlock(ThId); redval(0) = ReduceBlock(ThId+Onset)
+          ReduceBlock(ThId) = redval(2)+redval((Ic-ThId)/Onset)
+        END IF
+        Onset = Ic/2
+        CALL syncthreads()
+      END DO
+      IF (ThId .EQ. 1) C(Icr) = ReduceBlock(ThId)
+    END IF
+  END DO
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuDotP_dev
+  IMPLICIT NONE
+  
+  INTEGER :: ThId, BkId, NofBlock, BkSize, halfwidth
+  INTEGER :: Ic, IterIn
+  INTEGER :: i, j
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: val1, val2
+  REAL(8) :: redval(0:2)
+  
+  NofBlock = GridDim%x*GridDim%y*GridDim%z; BkSize = BlockDim%x*BlockDim%y*BlockDim%z
+  ThId = ThreadIdx%z; ThId = BlockDim%y*(ThId-1)+ThreadIdx%y; ThId = BlockDim%x*(ThId-1)+ThreadIdx%x
+  BkId = BlockIdx%z; BkId = GridDim%y*(BkId-1)+BlockIdx%y; BkId = GridDim%x*(BkId-1)+BlockIdx%x
+  
+  ! Reduce
+  IF ( BkId .GT. 1) RETURN
+  redval(1) = 0.0; redval(2) = 0.0
+  IterIn = CEILING(n/real(Bksize,4))
+  DO j = 1, IterIn
+    Ic = (j-1)*Bksize+ThId
+    IF(Ic .LE. n) THEN
+      val1 = v1(Ic); val2 = v2(Ic)
+      redval(0) = val1*val2
+    ELSE
+      redval(0) = 0.0
+    END IF
+    redval(2) = redval(2)+redval(0)
+  END DO
+  ReduceBlock(ThId) = redval(2)
+  CALL syncthreads()
+  
+  Ic = BkSize; halfwidth = Ic/2
+  DO WHILE(halfwidth .GT. 0)
+    Ic = Ic-halfwidth
+    IF (ThId .LE. ic) THEN
+      redval(2) = ReduceBlock(ThId); redval(0) = ReduceBlock(ThId+halfwidth)
+      ReduceBlock(ThId) = redval(2)+redval((Ic-ThId)/halfwidth)
+    END IF
+    halfwidth = Ic/2
+    CALL syncthreads()
+  END DO
+  IF (ThId .EQ. 1) dotP = ReduceBlock(ThId)
+  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuNorm2_dev
+  IMPLICIT NONE
+  
+  INTEGER :: ThId, BkId, NofBlock, BkSize, halfwidth
+  INTEGER :: Ic, IterIn
+  INTEGER :: i, j
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: val1
+  REAL(8) :: redval(0:2)
+  
+  NofBlock = GridDim%x*GridDim%y*GridDim%z; BkSize = BlockDim%x*BlockDim%y*BlockDim%z
+  ThId = ThreadIdx%z; ThId = BlockDim%y*(ThId-1)+ThreadIdx%y; ThId = BlockDim%x*(ThId-1)+ThreadIdx%x
+  BkId = BlockIdx%z; BkId = GridDim%y*(BkId-1)+BlockIdx%y; BkId = GridDim%x*(BkId-1)+BlockIdx%x
+  ! Reduce
+  IF ( BkId .GT. 1) RETURN
+  redval(1) = 0.0; redval(2) = 0.0
+  IterIn = CEILING(n/real(Bksize,4))
+  DO j = 1, IterIn
+    Ic = (j-1)*Bksize+ThId
+    IF(Ic .LE. n) THEN
+      val1 = v1(Ic)
+      redval(0) = val1*val1
+      !print*, redval(0)
+    ELSE
+      redval(0) = 0.0
+    END IF
+    redval(2) = redval(2)+redval(0)
+  END DO
+  ReduceBlock(ThId) = redval(2)
+  CALL syncthreads()
+  
+  Ic = BkSize; halfwidth = Ic/2
+  DO WHILE(halfwidth .GT. 0)
+    Ic = Ic-halfwidth
+    IF (ThId .LE. ic) THEN
+      redval(2) = ReduceBlock(ThId); redval(0) = ReduceBlock(ThId+halfwidth)
+      ReduceBlock(ThId) = redval(2)+redval((Ic-ThId)/halfwidth)
+    END IF
+    halfwidth = Ic/2
+    CALL syncthreads()
+  END DO
+  IF (ThId .EQ. 1) norm = sqrt(ReduceBlock(ThId))
+  !IF (ThId .EQ. 1) print*, norm
+  
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuAddvv_dev
+  ! ----------------------------------------------------------------
+  !                       v3 = a*v1 + b*v2                         !
+  ! ----------------------------------------------------------------
+  IMPLICIT NONE
+  
+  INTEGER :: thidx, thidy, thidz ! thidz would be 1 -- recommned not to use
+  INTEGER :: id
+  REAL(8) :: val1, val2, val3, val4
+  REAL(8) :: dval1, dval2
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  id = thidx+(thidy-1)*(gridDim%x*blockDim%x+(thidz-1)*(gridDim%y*blockDim%y))
+  IF (id .GT. n) RETURN
+  
+  val1 = Coef1; val2 = v1(id); dval1 = val1*val2
+  !print*, '1  : ',val1, val2
+  val3 = Coef2; val4 = v2(id); dval2 = val3*val4
+ ! print*, '2  : ',val3, val4
+  v3(id) = dval1+dval2
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cusMulv_dev
+  ! ----------------------------------------------------------------
+  !                       v3 = a*v1 + b*v2                         !
+  ! ----------------------------------------------------------------
+  IMPLICIT NONE
+  
+  INTEGER :: thidx, thidy, thidz ! thidz would be 1 -- recommned not to use
+  INTEGER :: id
+  REAL(8) :: val1, val2
+  
+  thidx = (blockIdx%x-1)*blockDim%x+threadIdx%x; thidy = (blockIdx%y-1)*blockDim%y+threadIdx%y;
+  thidz = (blockIdx%z-1)*blockDim%z+threadIdx%z
+  id = thidx+(thidy-1)*(gridDim%x*blockDim%x+(thidz-1)*(gridDim%y*blockDim%y))
+  
+  IF (id .GT. n) RETURN
+  
+  val1 = Coef1; val2 = v0(id);
+  v1(id) = val1*val2 
+  END SUBROUTINE
+  
+  ATTRIBUTES(GLOBAL) SUBROUTINE cuRedAdd_dev(ReduceArr, RedLmnt, vout, NofRed)
+  IMPLICIT NONE
+  REAL(8), INTENT(IN), DEVICE :: ReduceArr(:)
+  INTEGER, INTENT(IN), DEVICE :: RedLmnt(:)
+  INTEGER :: NofRed
+  REAL(8), INTENT(INOUT), DEVICE :: vout(NofRed)
+  REAL(8), SHARED :: ReduceBlock(*)
+  REAL(8) :: redval(0:2), preRed
+  INTEGER :: i, j
+  INTEGER :: id, thidx, thidy, thidz, blckid, blcksize
+  INTEGER :: ired, IterOut, IterIn, NofBlock
+  INTEGER :: halfwidth, iyN
+  INTEGER :: offset, onset
+  
+  thidx = threadIdx%x; thidy = threadIdx%y; thidz = threadIdx%z;
+  id = thidx+(thidy-1)*(blockDim%y+(thidz-1)*blockDim%z)
+  blckid = blockIdx%x+gridDim%x*((blockIdx%y-1)+gridDim%y*(blockIdx%z-1))
+  blcksize = blockdim%x*blockdim%y*blockdim%z
+  NofBlock = griddim%x*griddim%y*griddim%z
+  
+  redval(1) = 0.0
+  
+  ! Reduce
+  IterOut = CEILING(NofRed/dble(NofBlock))
+  DO  i =1, IterOut
+    ired = (i-1)*NofBlock+blckid
+    prered = 0.0
+    IF (ired .LE. NofRed) THEN
+      onset = RedLmnt(ired)
+      offset = RedLmnt(ired+1)
+      IterIn = CEILING((offset-onset)/DBLE(blcksize))
+      DO j = 1, IterIn
+        iyN = (j-1)*blcksize+id+onset-1 
+        IF(iyN .LT. offset) THEN
+          redval(0) = ReduceArr(iyN)
+          !IF(ired.EQ.1 .AND. NofRed .EQ. 15) &
+          !print*, iyN, redval(0)
+        ELSE
+          redval(0) = 0.0
+        END IF
+        prered = prered+redval(0)
+      END DO
+      ReduceBlock(id) = prered
+      CALL syncthreads()
+      !IF (ired.EQ.NofRed) print*, 0, id, ReduceBlock(id)
+      
+      iyN = blcksize; halfwidth = iyN/2
+      DO WHILE(halfwidth .GT. 0)
+        iyN = iyN-halfwidth
+        IF (id .LE. iyN) THEN
+          redval(2) = ReduceBlock(id); redval(0) = ReduceBlock(id+halfwidth)
+          ReduceBlock(id) = redval(2)+redval((iyN-id)/halfwidth)
+        END IF
+        halfwidth = iyN/2
+        CALL syncthreads()
+      END DO
+      IF (id .EQ. 1) vout(ired) = ReduceBlock(id)
+    END IF
+  END DO
+  
+  END SUBROUTINE
+  END MODULE

@@ -1,0 +1,85 @@
+<?xml version="1.0"?>
+<!--PGI Visual Fortran Project File-->
+<PGIproject Version="3.0">
+	<General ProjectIdGuid="{74AF1FD4-116D-4F54-88FA-9A0DA885FB73}"/>
+	<Configurations>
+		<Config Name="Debug|x64" OutDir="$(PlatformName)\$(ConfigurationName)" IntDir="$(PlatformName)\$(ConfigurationName)" CfgTyp="0" DbgEnvMerge="0" DbgMPI="0" DbgWorkDir="$(ProjectDir)" IncDirs="$(ProjectDir); C:\Program Files (x86)\IntelSWTools\compilers_and_libraries_2016.3.207\windows\mkl\include" DbgFmt="0" Optzn="0" Prepro="0" OMP="0" OAccEnable="0" MPI="1" CFEnable="0" CFMaxReg="32" CFFastMath="0" FPIeee="0" FtnOpts="-r8" LinkOutput="$(OutDir)\$(ProjectName).exe" StackReserve="100000000" LibOpts="-Mcudalib=cublas,cusparse"/>
+		<Config Name="Release|x64" OutDir="$(PlatformName)\$(ConfigurationName)" IntDir="$(PlatformName)\$(ConfigurationName)" CfgTyp="0" DbgEnvMerge="0" DbgMPI="0" DbgWorkDir="$(ProjectDir)" IncDirs="$(ProjectDir); C:\Program Files (x86)\IntelSWTools\compilers_and_libraries_2016.3.207\windows\mkl\include" Prepro="0" OMP="0" OAccEnable="0" MPI="1" CFEnable="0" CFMaxReg="32" CFFMA="0" CFFastMath="0" FPIeee="0" FtnOpts="-r8" LinkOutput="$(OutDir)\$(ProjectName).exe" StackReserve="100000000" LibOpts="-Mcudalib=cublas,cusparse"/>
+	</Configurations>
+	<Files>
+		<Folder Name="Include Files">
+			<File Name="Depletion.h" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="T">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+		</Folder>
+		<Folder Name="Resource Files">
+		</Folder>
+		<Folder Name="Source Files">
+			<File Name="AuxiliaryCSR.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="BasicOperations.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="CSRMATRIX.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="CUDAinitialize.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="main.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="MatExp_Mod.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="MatExpMod.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="param.f90" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+		</Folder>
+		<Folder Name="TrashCan">
+			<File Name="CRAM_csr_nobatch.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="Cuda_Split_Red_MulRoutines.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="CUDABasics.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="IntelMKLRoutines.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="NoPointer.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="val_curoutines.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+			<File Name="WithPOINTER.txt" ProjRelPath="T" IsFixedFormat="F" IsIncludeFile="F">
+				<Config Name="Debug|x64"/>
+				<Config Name="Release|x64"/>
+			</File>
+		</Folder>
+	</Files>
+	<ProjStartupServices/>
+	<Globals/>
+</PGIproject>
